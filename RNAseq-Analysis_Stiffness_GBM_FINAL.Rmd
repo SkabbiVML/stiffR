@@ -1,0 +1,925 @@
+---
+title: "StiffR project, differential expression, gene enrichment and survival analysis"
+author: "Skarphedinn Halldorsson"
+date: "Compiled on `r format(Sys.time(), '%d %B, %Y')`"
+output: html_document
+subtitle: "RNAseq analysis of tumor 22 biopsies from 8 GBM patients, Samples split by median sample stiffness within each patient" 
+
+---
+
+```{r global_options, include=FALSE}
+library(knitr)
+
+```
+
+```{r setup, include=FALSE}
+
+ setwd("D:/StiffR/RNAseq/R-Markdown") # My documents, on MSN cloud
+
+```
+
+# Introduction {-}
+Glioblastoma brain-tumors are notoriously difficult to treat and resistance to chemotherapy is common. Tumor morphology in gliomas can be extremely variable from one patient to the next. Different regions within a tumor also vary significantly with regard to cellular composition, vascularization and mechanical rigidity. In addition, surrounding tissue is often affected due to extracellular matrix re-organization, either due to the tumor itself or infiltrating immune cells. 
+All these factors affect metastatic growth and contribute to disease progression and chemoresistance.
+Radiogenomics is a field that studies the association between radiographic features (MRI) and pathological features. Due to the data-rich yet non-invasive nature of MRI, understanding the molecular mechanisms and pathological elements that produce descriptive radiographic features can benefit both neurosurgeons and patients. Inferring clinically relevant molecular features onto a tumor or regions of a tumor before operation has the potential to guide both surgery and subsequent treatment.
+
+# Material and methods {-}
+### Samples {-}
+Eleven glioblastoma patients were evaluated by MRI and MR elastography (MRE) prior to surgical resection. During surgery, 2-6 stereotactically navigated biopsies were collected from locations within the tumor. Normalized tissue stiffness based on MRE were recorded for the biopsy locations. Snap-frozen biopsies were processed to extract total RNA. Total RNA sequencing of 22 samples in 2 batches returned sequence counts for 22580 gene and other transcripts.
+
+### RNA sequence data pre-processing {-}
+
+Batch correction of raw counts was performed with the "ComBat_seq" package in R. Data normalization was performed with the rlog() function in the "DEseq2" package in R. All RNA features were used for differential expression analysis. The 5000 RNA features with the highest variance across all samples were selected for PCA and PLS-DA analysis.
+
+
+### Data analysis {-}
+
+Data normalization, dispersion and differential expression between harder and softer samples of 8 paired GBM biopsies was performed using the "DEseq2" package in R. Enrichment analysis was performed with the "Clusterprofiler" package in R. Volcano plot was generated with the "EnhancedVolcano" package in R. PCA and PLS-DA and stiffness predictions were produced using the "MixOmics" package in R. Survival analysis was performed with the "survival" and "survminer" packages in R.
+
+# Results {-}
+
+### Differential expression {-}
+
+```{r DataLoad, eval=TRUE, echo=FALSE}
+knitr::opts_chunk$set(eval=TRUE, echo=FALSE, message=FALSE, warning=FALSE, fig.align="center")
+setwd("D:/StiffR/RNAseq/R-Markdown")
+load("MRE_Data_11102022.RData")
+```
+
+```{r DEseq2, include=FALSE, echo=FALSE}
+
+#For Multi-factor analysis
+library(DESeq2)
+
+dds <- DESeqDataSetFromMatrix(countData = CountMat,
+                              colData = Anno,
+                              design =  ~ Seq_run + Patient + Stiffness.by.Patient) # Comparison is set up so that stiffness is compaired within each patient
+
+dds <- estimateSizeFactors(dds)
+
+dds <- DESeq(dds)
+
+res <- results(dds)
+
+res <- results(dds, alpha = 0.1, contrast=c("Stiffness.by.Patient", "Stiff","Soft")) # changing order of comparison
+
+library(org.Hs.eg.db)
+
+res$GenName <- mapIds(org.Hs.eg.db,
+                           keys=rownames(res),
+                           column="SYMBOL",
+                           keytype="ENTREZID",
+                           multiVals="first")
+```
+
+Summary of Differential expression results:
+LFC = Log Fold-change
+Up = higher expression in stiffer biopsy(ies) within each patient
+
+```{r, echo=TRUE}
+summary(res)
+```
+
+### Volcano plot of differential expression {-}
+
+
+
+```{r volcano, echo=FALSE, eval=FALSE, fig.width = 12, fig.height= 10}
+library(EnhancedVolcano)
+
+library(ggplot2)
+options(ggrepel.max.overlaps = Inf)
+EnhancedVolcano(res,
+                lab = res$GenName,
+                x = 'log2FoldChange',
+                y = 'pvalue',
+                #title = 'Stiffness by Patient',
+                subtitle = "Differential expression between stiff (positive) and soft (negative) biopsies",
+                boxedLabels = TRUE,
+                selectLab = c("COL1A2","COL4A1","COL4A2","COL5A1","COL5A2","COL6A3","COL8A1","COL12A1","COL13A1","COL15A1","FBN1","SULF1","FN1","LAMA4","LAMB1","LAMC1","MMP1","MMP8","MMP11","MMP14","MMP19","PECAM1","TGFBI","COL14A1","COLGALT1","CPLX2","ADRA1A","SHANK2","RIMS1","ARC","CUX2","PHF24","MAPK8IP2","GRIK2","GRIN1","HRAS","MAPT","NTRK2","PRKAR1B","JPH3","LRFN2","RAB3A","SLC8A3","SYT4","WNT7A","CALB2","LGI1","RIMS2"),
+                
+                drawConnectors = TRUE,
+                pCutoff = 0.001,
+                FCcutoff = 0.5,
+                
+                pointSize = 3.0,
+                maxoverlapsConnectors = 10,
+                labSize = 4.0,
+                legendLabels=c('Not sig.','Log (base 2) FC','p-value',
+                               'p-value & Log (base 2) FC'),
+                
+                legendPosition = 'none',
+                legendLabSize = 16,
+                legendIconSize = 5.0) + ggplot2::coord_cartesian(ylim=c(0, 8),xlim=c(-3, 4))
+
+```
+### Heatmap of differentially expressed genes {-}
+
+All genes that passed an adjusted adjusted p-value threshold of 0.05 (196 genes) are included in the heatmap. Expression of genes is scaled across all biopsies
+
+```{r heatmap, echo=FALSE, eval=TRUE, fig.width = 12, fig.height= 10}
+library(dplyr)
+library(tibble)
+
+#rlog transformation of gene expression
+rld <- rlog(dds, blind = FALSE)
+
+
+# use the resSig file 
+
+resSig <- as.data.frame(subset(res, padj < 0.05))
+
+# extract the significan genes from Countmat
+
+SigMat <- rld[rownames(resSig),]
+
+GenIDs <- rownames(SigMat)
+
+SigMat <- as_tibble(assay(SigMat))
+
+rownames(SigMat) <- GenIDs
+colnames(SigMat) <- Anno$Sample_ID
+
+anno <- Anno %>% dplyr::select(c(Sample_ID,Stiffness.by.Patient))
+rownames(anno) <- NULL
+anno <- column_to_rownames(anno, var = "Sample_ID")
+
+colnames(anno) <- "Stiffness"
+
+ann_colors <- list(Stiffness = c(Stiff = "darkorange3", Soft ="cornflowerblue"))
+
+library(pheatmap)
+library(RColorBrewer)
+library(viridis)
+
+pheatmap(SigMat, 
+         annotation_col = anno, 
+         scale = "row", 
+         clustering_method = "ward.D",
+         show_rownames = F,
+         color = inferno(100),
+         treeheight_row = 8, 
+         treeheight_col = 10,
+         annotation_colors = ann_colors
+         )
+```
+
+
+### Leave-one-out validation {-}
+
+Due to the limited size of our dataset, differential expression of some genes may be dependent on a small number of samples or a samples from a single patient. To explore the robustness of the differential expression, we performed sequential DE analysis leaving out all samples from a single patient in each iteration.  The table below shows all RNA features that survived leave-one-out analysis for every patient in the cohort.
+
+```{r LOOtable, echo=FALSE,eval=TRUE}
+library(dplyr)
+#LOO <- read.csv("E:/StiffR/RNAseq/resultsData/Leave_one_out_RNAseq_validation_04052022.csv")
+
+#LOO <- LOO %>% filter(n == 9) %>% dplyr::select("ENTREZ_ID","geneID","GenName")
+# rownames(LOO) <- LOO$ENTREZ_ID
+# LOO$GenName <- mapIds(org.Hs.eg.db,
+#                            keys=rownames(LOO),
+#                            column="GENENAME",
+#                            keytype="ENTREZID",
+#                            multiVals="first")
+
+knitr::kable((LOO), "pipe", align = c("c","c","l"), row.names = F, caption = "Leave-One-Out Validation")
+
+```
+
+
+```{r genes , echo=FALSE, eval=TRUE}
+library(dplyr)
+library(ggplot2)
+
+# make a "genelist" from the DESeq2 results file. Contains all the gene IDs in res and their log2foldchange
+geneList <- res$log2FoldChange
+
+## feature 2: named vector
+names(geneList) <- as.character(rownames(res))
+
+## feature 3: decreasing order
+geneList <- sort(geneList, decreasing = TRUE)
+
+# extract table with all genes that meet the adjusted p-value cutoff
+resSig <- as.data.frame(subset(res, padj < 0.1))
+
+
+library(magrittr)
+
+# many different ways of selecting genes for ORA, pick one that suits the question
+# gene <- names(geneList)[abs(geneList) > 1] # selecting all genes with 2-fold difference in expression (either way), irrespective of p-values. 490 genes in total
+geneUP <- rownames(filter(resSig, log2FoldChange > 0)) # selecting up-regulated genes that meet the p-value threshold (see above resSig, padj < 0.1)
+geneDOWN <- rownames(filter(resSig, log2FoldChange < 0)) # selecting down-regulated genes that meet the p-value threshold (see above resSig, padj < 0.1)
+```
+### Pathway Enrichment Analysis {-}
+
+
+
+Over-representation analysis (ORA) of differentially expressed genes between stiff and soft biopsies. Genes selected for ORA were all those that passed an adjuste p-value threshold of 0.1. Of these, genes with positive log2 fold change were classified as "Stiff" and genes with negative log2 fold-change were classified as "Soft". ORA was performed on the "Stiff" and "Soft" genelists separately.  
+
+Gene Set Enrichment Analysis (GSEA) is a powerful analytical method for interpreting gene expression data.  It evaluates cumulative changes in the expression of groups of multiple genes defined based on prior biological knowledge.  It first ranks all genes in a data set, then calculates an enrichment score for each gene set, which reflects how often members of that gene set occur at the top or bottom of the ranked data set (for example, in expression data, in either the most highly expressed genes or the most underexpressed genes). (https://www.genepattern.org/modules/docs/GSEA/14)
+
+The full method explaining GSEA can be found here: https://www.pnas.org/content/102/43/15545.full
+
+A number of databanks exist that contain information on pre-defined gene sets. Among these are Wikipathways, Gene Ontology Consortium (GO) and the Kyoto Encyclopedia of Genes and Genomes (KEGG).
+
+Gene cluster plots are one way to visualize the results from ORA and GSEA. They typically show a central node or nodes representing annotated gene sets surrounded by the specific genes found in the selected or ranked gene list. Genes that appear in multiple gene sets are shown as connected links between nodes. 
+
+
+
+### Gene Ontology (GO)
+
+http://geneontology.org/
+
+Gene ontology is divided into cellular component, biological process and molecular function. Below is a summary of ORA and GSEA of gene sets associated with "Stiff" or "Soft" biopsies.
+
+```{r, echo=FALSE}
+library(clusterProfiler)
+library(DOSE)
+library(org.Hs.eg.db)
+library(DT)
+
+goORA_UP_BP <- enrichGO(gene          = geneUP,
+                     universe      = names(geneList), # setting the background expression list
+                     OrgDb         = org.Hs.eg.db,
+                     ont           = "BP",
+                     pAdjustMethod = "BH",
+                     pvalueCutoff  = 0.01,
+                     qvalueCutoff  = 0.01,
+                     readable      = TRUE)
+
+goORA_UP_CC <- enrichGO(gene          = geneUP,
+                        universe      = names(geneList), # setting the background expression list
+                        OrgDb         = org.Hs.eg.db,
+                        ont           = "CC",
+                        pAdjustMethod = "BH",
+                        pvalueCutoff  = 0.01,
+                        qvalueCutoff  = 0.01,
+                        readable      = TRUE)
+
+goORA_UP_MF <- enrichGO(gene          = geneUP,
+                        universe      = names(geneList), # setting the background expression list
+                        OrgDb         = org.Hs.eg.db,
+                        ont           = "MF",
+                        pAdjustMethod = "BH",
+                        pvalueCutoff  = 0.01,
+                        qvalueCutoff  = 0.01,
+                        readable      = TRUE)
+
+goORA_UP_ALL <- enrichGO(gene          = geneUP,
+                     universe      = names(geneList), # setting the background expression list
+                     OrgDb         = org.Hs.eg.db,
+                     ont           = "ALL",
+                     pAdjustMethod = "BH",
+                     pvalueCutoff  = 0.01,
+                     qvalueCutoff  = 0.01,
+                     readable      = TRUE)
+
+goORA_UP_BP_simple <- as.data.frame("simplify"(goORA_UP_BP, cutoff = 0.5, by = "pvalue", select_fun=min, measure = "Wang"))
+goORA_UP_BP_simple$ONTOLOGY <- "BP" 
+
+goORA_UP_CC_simple <- as.data.frame("simplify"(goORA_UP_CC, cutoff = 0.5, by = "pvalue", select_fun=min, measure = "Wang"))
+goORA_UP_CC_simple$ONTOLOGY <- "CC"
+
+goORA_UP_MF_simple <- as.data.frame("simplify"(goORA_UP_MF, cutoff = 0.5, by = "pvalue", select_fun=min, measure = "Wang"))
+goORA_UP_MF_simple$ONTOLOGY <- "MF"
+
+goORA_UP <- rbind(goORA_UP_BP_simple,goORA_UP_CC_simple,goORA_UP_MF_simple)
+
+goORA_DOWN_BP <- enrichGO(gene          = geneDOWN,
+                        universe      = names(geneList), # setting the background expression list
+                        OrgDb         = org.Hs.eg.db,
+                        ont           = "BP",
+                        pAdjustMethod = "BH",
+                        pvalueCutoff  = 0.01,
+                        qvalueCutoff  = 0.01,
+                        readable      = TRUE)
+
+goORA_DOWN_CC <- enrichGO(gene          = geneDOWN,
+                        universe      = names(geneList), # setting the background expression list
+                        OrgDb         = org.Hs.eg.db,
+                        ont           = "CC",
+                        pAdjustMethod = "BH",
+                        pvalueCutoff  = 0.01,
+                        qvalueCutoff  = 0.01,
+                        readable      = TRUE)
+
+goORA_DOWN_MF <- enrichGO(gene          = geneDOWN,
+                        universe      = names(geneList), # setting the background expression list
+                        OrgDb         = org.Hs.eg.db,
+                        ont           = "MF",
+                        pAdjustMethod = "BH",
+                        pvalueCutoff  = 0.01,
+                        qvalueCutoff  = 0.01,
+                        readable      = TRUE)
+
+goORA_DOWN_ALL <- enrichGO(gene          = geneDOWN,
+                     universe      = names(geneList), # setting the background expression list
+                     OrgDb         = org.Hs.eg.db,
+                     ont           = "ALL",
+                     pAdjustMethod = "BH",
+                     pvalueCutoff  = 0.01,
+                     qvalueCutoff  = 0.01,
+                     readable      = TRUE)
+
+goORA_DOWN_BP_simple <- as.data.frame("simplify"(goORA_DOWN_BP, cutoff = 0.5, by = "pvalue", select_fun=min, measure = "Wang"))
+goORA_DOWN_BP_simple$ONTOLOGY <- "BP" 
+
+goORA_DOWN_CC_simple <- as.data.frame("simplify"(goORA_DOWN_CC, cutoff = 0.5, by = "pvalue", select_fun=min, measure = "Wang"))
+goORA_DOWN_CC_simple$ONTOLOGY <- "CC"
+
+goORA_DOWN_MF_simple <- as.data.frame("simplify"(goORA_DOWN_MF, cutoff = 0.5, by = "pvalue", select_fun=min, measure = "Wang"))
+goORA_DOWN_MF_simple$ONTOLOGY <- "MF"
+
+goORA_DOWN <- rbind(goORA_DOWN_BP_simple,goORA_DOWN_CC_simple,goORA_DOWN_MF_simple)
+
+goORA_DOWN$class <- "soft"
+goORA_UP$class <- "stiff"
+
+```
+### GO ORA, Over-represented in low stiffness samples
+
+```{r, echo=FALSE}
+library(DT)
+datatable(as.data.frame(goORA_DOWN), caption = "GO-ORA, Over-represented in low stiffness samples")
+```
+
+
+### GO ORA, Over-represented in high stiffness samples
+```{r, echo=FALSE}
+datatable(as.data.frame(goORA_UP), caption = "GO-ORA, Over-represented in high stiffness samples")
+```
+
+### Dotplot displaying the Gene Ontology gene sets that display the highest enrichment in high-stiffness samples.
+
+```{r,echo = FALSE, eval = FALSE, fig.width = 12, fig.hight = 8}
+library(dplyr)
+library(tidyr)
+library(stringr)
+library(forcats)
+
+GORAframe_up <- as_tibble(goORA_UP)
+
+GoraTrim_UP <- GORAframe_up %>% dplyr::group_by(ONTOLOGY) %>% slice_min(n=10, order_by = qvalue, with_ties = F) %>% tidyr::separate(GeneRatio, into = c("gene","background"), sep = "/")
+
+GoraTrim_UP$gene <- as.numeric(GoraTrim_UP$gene)
+GoraTrim_UP$background <- as.numeric(GoraTrim_UP$background)
+
+GoraTrim_UP <- GoraTrim_UP %>% mutate("GeneRatio" = gene/background) %>% mutate(Description = fct_reorder(Description, GeneRatio))
+
+ggplot(GoraTrim_UP, aes(x=GeneRatio, y= Description))+
+  geom_point(aes(size=Count, color=p.adjust))+
+  scale_size_continuous(limits = c(5,60))+
+  scale_x_continuous(limits = c(0.02, 0.2))+
+  ylab("")+
+  scale_color_gradient(low="red", high="darkblue",limits=c(3e-31, 1e-2), trans = "log10")+
+  facet_grid(ONTOLOGY~., scale="free")+
+  theme_bw()+
+  theme(axis.text.y = element_text(size = 12, colour = "black"), 
+        legend.title = element_text(size = 12),
+        legend.text = element_text(size = 12),
+        axis.title.x = element_text(size = 12),
+        strip.text.y = element_text(size = 14),
+        aspect.ratio=4/10) + ggtitle("Dotplot for GO-ORA, Over-represented in high stiffness samples")
+```
+
+```{r,echo = FALSE, fig.width = 12, fig.hight = 8}
+library(dplyr)
+library(forcats)
+goORA_ALL <- rbind(goORA_DOWN,goORA_UP)
+
+GORAframe_ALL <- as_tibble(goORA_ALL)
+
+GoraTrim_ALL <- GORAframe_ALL %>% dplyr::group_by(ONTOLOGY) %>% slice_min(n=10, order_by = qvalue, with_ties = F) %>% tidyr::separate(GeneRatio, into = c("gene","background"), sep = "/")
+
+GoraTrim_ALL$gene <- as.numeric(GoraTrim_ALL$gene)
+GoraTrim_ALL$background <- as.numeric(GoraTrim_ALL$background)
+
+GoraTrim_ALL <- GoraTrim_ALL %>% dplyr::mutate("GeneRatio" = gene/background) %>% dplyr::mutate(Description = fct_reorder(Description, GeneRatio))
+
+ggplot(GoraTrim_ALL, aes(x=GeneRatio, y= Description))+
+  geom_point(aes(size=Count, color=p.adjust))+
+  scale_size_continuous(limits = c(5,60))+
+  scale_x_continuous(limits = c(0.02, 0.2))+
+  ylab("")+
+  scale_color_gradient(low="red", high="darkblue", trans = "log10")+
+  facet_grid(ONTOLOGY~class, scale="free")+
+  theme_bw()+
+  theme(axis.text.y = element_text(size = 12, colour = "black"), 
+        legend.title = element_text(size = 12),
+        legend.text = element_text(size = 12),
+        axis.title.x = element_text(size = 12),
+        strip.text.y = element_text(size = 14),
+        aspect.ratio=4/10) + ggtitle("Dotplot for GO-ORA")
+```
+
+### Cluster map of Gene Ontology gene sets that display the highest enrichment in high-stiffness samples.
+```{r , echo = FALSE, eval = FALSE, fig.width = 12}
+# Select the filtered pathways (Description) from the "trimmed" DF. can base selection on any criteria set in slice_max/min
+# Here we select for lowest qvalue
+
+selected.pathways <- as.data.frame(GoraTrim_UP) %>% dplyr::slice_min(n=6, order_by = qvalue, with_ties = F)
+
+#Finally, produce the CNET plot of selected pathways from the "ALL" enrichResults object
+cnetplot(goORA_UP_ALL, showCategory = as.character(selected.pathways$Description), foldChange=geneList, node_label = "category")
+
+```
+
+### Dotplot displaying the Gene Ontology gene sets that display the highest enrichment in low-stiffness samples.
+
+```{r,echo = FALSE, eval = FALSE, fig.width = 12, fig.hight = 8}
+GORAframe_DOWN <- as_tibble(goORA_DOWN)
+
+GoraTrim_DOWN <- GORAframe_DOWN %>% dplyr::group_by(ONTOLOGY) %>% 
+  slice_min(n=10, order_by = qvalue, with_ties = F) %>% tidyr::separate(GeneRatio, into = c("gene","background"), sep = "/")
+
+GoraTrim_DOWN$gene <- as.numeric(GoraTrim_DOWN$gene)
+GoraTrim_DOWN$background <- as.numeric(GoraTrim_DOWN$background)
+
+GoraTrim_DOWN <- GoraTrim_DOWN %>% mutate("GeneRatio" = gene/background) %>% mutate(Description = fct_reorder(Description, GeneRatio))
+
+ggplot(GoraTrim_DOWN, aes(x=GeneRatio, y= Description))+
+  geom_point(aes(size=Count, color=p.adjust))+
+  scale_size_continuous(limits = c(5,60))+
+  scale_x_continuous(limits = c(0.02, 0.2))+
+  ylab("")+
+  scale_color_gradient(low="red", high="darkblue",limits=c(1e-18, 1e-2), trans = "log10")+
+  facet_grid(ONTOLOGY~., scale="free")+
+  theme_bw()+
+  theme(axis.text.y = element_text(size = 12, colour = "black"), 
+        legend.title = element_text(size = 12),
+        legend.text = element_text(size = 12),
+        axis.title.x = element_text(size = 12),
+        strip.text.y = element_text(size = 14),
+        aspect.ratio=4/10) + ggtitle("Dotplot for GO-ORA, Over-represented in low stiffness samples")
+```
+
+### Cluster map of gene sets in GO cellular component that display the highest enrichment in low-stiffness samples.
+```{r , echo = FALSE, eval = FALSE, fig.width = 12}
+# Select the filtered pathways (Description) from the "trimmed" DF. can base selection on any criteria set in slice_max/min
+# Here we select for lowest qvalue
+
+selected.pathways <- as.data.frame(GoraTrim_DOWN) %>% slice_min(n=6, order_by = qvalue, with_ties = F)
+
+#Finally, produce the CNET plot of selected pathways from the "ALL" enrichResults object
+cnetplot(goORA_DOWN_ALL, showCategory = as.character(selected.pathways$Description), foldChange=geneList, node_label = "category")
+
+```
+
+
+
+### Gene Ontology GSEA, Gene set enrichment of ranked genelist (all genes in differential expression analysis)
+```{r, echo=FALSE}
+goGSEA_CC <- gseGO(geneList     = geneList,
+                OrgDb        = org.Hs.eg.db,
+                ont          = "CC", # "CC", "BP", "MF", or "ALL"
+                #nPerm        = 1000,
+                minGSSize    = 50,
+                maxGSSize    = 500,
+                pvalueCutoff = 0.01,
+                eps = 0,
+                verbose      = T)
+
+goGSEA_CC <- setReadable(goGSEA_CC, OrgDb = org.Hs.eg.db)
+
+goGSEA_BP <- gseGO(geneList     = geneList,
+                   OrgDb        = org.Hs.eg.db,
+                   ont          = "BP", # "CC", "BP", "MF", or "ALL"
+                   #nPerm        = 1000,
+                   minGSSize    = 50,
+                   maxGSSize    = 500,
+                   pvalueCutoff = 0.01,
+                   eps = 0,
+                   verbose      = T)
+
+
+goGSEA_BP <- setReadable(goGSEA_BP, OrgDb = org.Hs.eg.db)
+
+
+goGSEA_MF <- gseGO(geneList     = geneList,
+                   OrgDb        = org.Hs.eg.db,
+                   ont          = "MF", # "CC", "BP", "MF", or "ALL"
+                   #nPerm        = 1000,
+                   minGSSize    = 50,
+                   maxGSSize    = 500,
+                   pvalueCutoff = 0.01,
+                   eps = 0,
+                   verbose      = T)
+
+
+goGSEA_MF <- setReadable(goGSEA_MF, OrgDb = org.Hs.eg.db)
+
+goGSEA_ALL <- gseGO(geneList     = geneList,
+                   OrgDb        = org.Hs.eg.db,
+                   ont          = "ALL", # "CC", "BP", "MF", or "ALL"
+                   #nPerm        = 1000,
+                   minGSSize    = 50,
+                   maxGSSize    = 500,
+                   pvalueCutoff = 0.01,
+                   eps = 0,
+                   verbose      = T)
+
+
+goGSEA_ALL <- setReadable(goGSEA_ALL, OrgDb = org.Hs.eg.db)
+
+
+
+
+goGSEA_BP_simple <- as.data.frame("simplify"(goGSEA_BP, cutoff = 0.5, by = "pvalue", select_fun=min, measure = "Wang"))
+goGSEA_BP_simple$ONTOLOGY <- "BP" 
+
+goGSEA_CC_simple <- as.data.frame("simplify"(goGSEA_CC, cutoff = 0.5, by = "pvalue", select_fun=min, measure = "Wang"))
+goGSEA_CC_simple$ONTOLOGY <- "CC"
+
+goGSEA_MF_simple <- as.data.frame("simplify"(goGSEA_MF, cutoff = 0.5, by = "pvalue", select_fun=min, measure = "Wang"))
+goGSEA_MF_simple$ONTOLOGY <- "MF"
+
+goGSEA <- rbind(goGSEA_BP_simple,goGSEA_CC_simple,goGSEA_MF_simple)
+
+datatable(goGSEA, caption = "GO-GSEA, Gene-set enrichment in full geneList")
+```
+### GSEA plot
+GSEA plots are used to show the distribution of genes belonging to a specific gene-set in the ranked gene list. Below are GSEA plots representing the Extracellular matrix organization, neutrophil activation and pre-synapse organization, all of which show strong enrichment in either stiff or soft biopsies.
+
+```{r,echo = FALSE, fig.width = 12, fig.hight = 8}
+gseaplot(goGSEA_ALL, by = "all", title = goGSEA_ALL$Description[1] , geneSetID = 1)
+gseaplot(goGSEA_ALL, by = "all", title = goGSEA_ALL$Description[2] , geneSetID = 2)
+gseaplot(goGSEA_ALL, by = "all", title = goGSEA_ALL$Description[4], geneSetID = 4)
+gseaplot(goGSEA_ALL, by = "all", title = goGSEA_ALL$Description[7], geneSetID = 7)
+```
+
+
+### Dotplot displaying the Gene Ontology gene sets that display the highest enrichment in full ranked genelist. Positive enrichment scores 
+("EnrichmentScore") indicates enrichment in "Stiff" biopsies while negative enrichment scores indicate enrichment in "Soft" biopsies.
+
+```{r,echo = FALSE, fig.width = 12, fig.hight = 8}
+goGSEAframe <- as_tibble(goGSEA)
+
+
+goGSEAframe <- goGSEAframe %>% dplyr::group_by(ID) %>%  mutate(count = sum(str_count(core_enrichment, "/")) + 1) %>%
+  mutate("GeneRatio" = count/setSize) %>% mutate(Description = fct_reorder(Description, GeneRatio))
+
+goGSEAframe$regulation <- ifelse(goGSEAframe$NES > 0, "Stiff", "Soft") 
+
+goGSEATrim <- goGSEAframe %>% dplyr::group_by(ONTOLOGY) %>% slice_min(n=9, order_by = qvalues, with_ties = F) 
+
+ggplot(goGSEATrim, aes(x=GeneRatio, y= fct_reorder(Description, GeneRatio)))+
+  geom_point(aes(size=count,color=p.adjust))+
+  #scale_size_continuous(limits = c(5,60))+
+  ylab("")+
+  scale_color_gradient(low="red", high="darkblue", trans = "log10")+
+  #scale_x_continuous(limits = c(0.02, 0.2))+
+  facet_grid(ONTOLOGY~regulation, scale="free")+
+  theme_bw()+
+  theme(axis.text.y = element_text(size = 12, colour = "black"), 
+        legend.title = element_text(size = 12),
+        legend.text = element_text(size = 12),
+        axis.title.x = element_text(size = 12),
+        strip.text.y = element_text(size = 14),
+        aspect.ratio=10/10)+ ggtitle("Dotplot for GO-GSEA")
+```
+
+### Cluster map of Gene Ontology gene sets that display the highest enrichment in full ranked genelist.
+```{r , echo = FALSE, fig.width = 12}
+cnetplot(goGSEA_ALL, showCategory = 8, foldChange=geneList, node_label = "category")
+```
+
+## KEGG
+
+https://www.genome.jp/kegg/
+
+```{r, echo=FALSE}
+# KEGG over-representation test
+# Input ID type can be kegg, ncbi-geneid, ncbi-proteinid or uniprot. An example can be found in https://guangchuangyu.github.io/2016/05/convert-biological-id-with-kegg-api-using-clusterprofiler/.
+options(clusterProfiler.download.method = "wininet")
+
+keggORA_UP <- enrichKEGG(gene         = geneUP,
+                 organism = "hsa",
+                 universe = names(geneList),
+                 pvalueCutoff = 0.05)
+
+keggORA_UP <- setReadable(keggORA_UP, OrgDb = org.Hs.eg.db, keyType = "ENTREZID")
+
+
+#head(keggORA_UP)
+
+
+keggORA_DOWN <- enrichKEGG(gene         = geneDOWN,
+                         organism     = 'hsa',
+                         universe = names(geneList),
+                         pvalueCutoff = 0.05)
+
+keggORA_DOWN <- setReadable(keggORA_DOWN, OrgDb = org.Hs.eg.db, keyType = "ENTREZID")
+
+#head(keggORA_DOWN)
+
+# KEGG Gene Set Enrichment Analysis
+
+keggGSEA <- gseKEGG(geneList     = geneList,
+               organism     = 'hsa',
+               #nPerm        = 1000,
+               minGSSize    = 20,
+               pvalueCutoff = 0.01,
+               verbose      = FALSE)
+
+
+keggGSEA <- setReadable(keggGSEA, OrgDb = org.Hs.eg.db, keyType = "ENTREZID")
+
+```
+### KEGG gene sets over-represented in low stiffness samples
+
+```{r, echo=FALSE}
+knitr::kable(as.data.frame(keggORA_DOWN %>% dplyr::select(1:7)), "pipe", row.names = F, caption = "KEGG-ORA, Over-represented in low stiffness samples")
+```
+
+```{undefined eval=TRUE, include=TRUE}
+dotplot(keggORA_DOWN, showCategory=20)+ ggtitle("Dotplot for KEGG-ORA, Over-represented in low stiffness samples")
+```
+
+```{undefined eval=TRUE, include=TRUE}
+cnetplot(keggORA_DOWN, foldChange=geneList) # node labeling is set by "node_label=", can be "category", "gene", "all" or "none"
+```
+
+### KEGG gene sets over-represented in high stiffness samples
+```{r, echo=FALSE}
+knitr::kable(as.data.frame(keggORA_UP %>% dplyr::select(1:7)), "pipe", row.names = F, caption = "KEGG-ORA, Over-represented in high stiffness samples")
+```
+
+### Dotplot displaying the KEGG gene sets with the highest enrichment in high-stiffness samples.
+
+```{r, echo=FALSE, fig.width = 12}
+dotplot(keggORA_UP, showCategory=10, label_format = 50)+ ggtitle("Dotplot for KEGG-ORA, Over-represented in high stiffness samples")
+```
+
+### Cluster map of gene sets in KEGG that display the highest enrichment in high-stiffness samples.
+```{r, echo=FALSE, fig.width = 12}
+cnetplot(keggORA_UP, foldChange=geneList, ) # node labeling is set by "node_label=", can be "category", "gene", "all" or "none"
+```
+
+### KEGG GSEA, Over-represented gene-sets in full ranked genelist 
+```{r, echo=FALSE}
+knitr::kable(as.data.frame(keggGSEA %>% dplyr::select(1:8)), "pipe", row.names = F, caption = "KEGG-GSEA, Over-represented in full gene set")
+```
+
+### Dotplot displaying the KEGG gene sets that display the highest enrichment in ranked genelist.
+
+```{r,echo = FALSE, fig.width = 12, fig.hight = 8}
+dotplot(keggGSEA, showCategory=20, split = ".sign",label_format = 70)+
+  facet_grid(.~.sign)+ 
+  ggtitle("Dotplot for KEGG-GSEA")
+```
+
+### Cluster map of gene sets in KEGG that display the highest gene-set enrichment.
+```{r , echo = FALSE, fig.width = 12}
+cnetplot(keggGSEA, foldChange=geneList, node_label= "category", showCategory = 8) # node labeling is set by "node_label=", can be "category", "gene", "all" or "none"
+```
+
+#Reactome
+
+https://reactome.org/
+
+```{r, echo=FALSE}
+library(ReactomePA)
+
+# Pathway Enrichment Analysis of a gene set
+
+ReactORA_UP <- enrichPathway(geneUP,
+                         organism = "human",
+                         pvalueCutoff = 0.05,
+                         pAdjustMethod = "BH",
+                         qvalueCutoff = 0.05,
+                         universe = names(geneList),
+                         minGSSize = 10,
+                         maxGSSize = 500,
+                         readable = TRUE)
+
+ReactORA_UP <- setReadable(ReactORA_UP, OrgDb = org.Hs.eg.db, keyType = "ENTREZID")
+
+#head(ReactOR_UP)
+
+ReactORA_DOWN <- enrichPathway(geneDOWN,
+                            organism = "human",
+                            pvalueCutoff = 0.05,
+                            pAdjustMethod = "BH",
+                            qvalueCutoff = 0.05,
+                            universe = names(geneList),
+                            minGSSize = 10,
+                            maxGSSize = 500,
+                            readable = TRUE)
+
+ReactORA_DOWN <- setReadable(ReactORA_DOWN, OrgDb = org.Hs.eg.db, keyType = "ENTREZID")
+
+#head(ReactOR_DOWN)
+
+# Gene Set Enrichment Analysis of Reactome Pathway
+
+ReactGSE <- gsePathway(geneList,
+                       organism = "human",
+                       exponent = 1,
+                       minGSSize = 50,
+                       maxGSSize = 500,
+                       eps = 0,
+                       pvalueCutoff = 0.05,
+                       pAdjustMethod = "BH",
+                       verbose = TRUE,
+                       seed = FALSE,
+                       by = "fgsea")
+
+ReactGSE <- setReadable(ReactGSE, OrgDb = org.Hs.eg.db, keyType = "ENTREZID")
+
+#head(ReactGSE)
+```
+
+### Reactome ORA, Over-represented in low stiffness samples
+
+```{r, echo=FALSE}
+datatable(as.data.frame(ReactORA_DOWN), caption = "Reactome-ORA, Over-represented in low stiffness samples")
+```
+
+### Reactome ORA, Over-represented in high stiffness samples
+
+```{r, echo=FALSE}
+datatable(as.data.frame(ReactORA_UP), caption = "Reactome-ORA, Over-represented in high stiffness samples")
+```
+
+### Dotplot displaying the over-representation of differentially expressed genes found in high-stiffness samples in the Reactome database.
+
+```{r,echo = FALSE, fig.width = 12, fig.hight = 8}
+dotplot(ReactORA_UP, showCategory=20, label_format = 80)+ ggtitle("Dotplot for Reactome-ORA, Over-represented in high stiffness samples")
+```
+
+### Cluster map of gene sets in Reactome that display the highest enrichment in high-stiffness samples.
+```{r , echo = FALSE, fig.width = 12}
+cnetplot(ReactORA_UP, foldChange=geneList) # node labeling is set by "node_label=", can be "category", "gene", "all" or "none"
+```
+### Dotplot displaying the over-representation of differentially expressed genes found in low-stiffness samples in the Reactome database.
+
+```{r,echo = FALSE, fig.width = 12, fig.hight = 8}
+dotplot(ReactORA_DOWN, showCategory=20, label_format = 180)+ ggtitle("Dotplot for Reactome-ORA, Over-represented in low stiffness samples")
+```
+
+### Cluster map of gene sets in Reactome that display the highest enrichment in low-stiffness samples.
+```{r , echo = FALSE, fig.width = 12}
+cnetplot(ReactORA_DOWN, foldChange=geneList) # node labeling is set by "node_label=", can be "category", "gene", "all" or "none"
+```
+
+
+### Reactome GSEA
+```{r, echo=FALSE}
+datatable(as.data.frame(ReactGSE), caption = "Reactome-GSEA, Over-represented in full gene set")
+```
+
+### Dotplot displaying the gene sets in Reactome that display the highest gene-set enrichment.
+
+```{r,echo = FALSE, fig.width = 12, fig.hight = 8}
+Reactomeframe <- as_tibble(ReactGSE)
+
+
+Reactomeframe <- Reactomeframe %>% dplyr::group_by_(ID) %>%  dplyr::mutate(count = sum(str_count(core_enrichment, "/")) + 1) %>%
+  dplyr::mutate("GeneRatio" = count/setSize) %>% dplyr::mutate(Description = fct_reorder(Description, GeneRatio))
+
+Reactomeframe$regulation <- ifelse(Reactomeframe$NES > 0, "Stiff", "Soft") 
+
+ReactomeTrim <- as.data.frame(Reactomeframe)  %>% slice_min(n=20, order_by = p.adjust, with_ties = F) 
+
+ggplot(ReactomeTrim, aes(x=GeneRatio, y= fct_reorder(Description, GeneRatio)))+
+  geom_point(aes(size=count,color=p.adjust))+
+  #scale_size_continuous(limits = c(5,60))+
+  ylab("")+
+  scale_color_gradient(low="red", high="darkblue", trans = "log10")+
+  #scale_x_continuous(limits = c(0.02, 0.2))+
+  facet_grid(.~regulation, scale="free")+
+  theme_bw()+
+  theme(axis.text.y = element_text(size = 12, colour = "black"), 
+        legend.title = element_text(size = 12),
+        legend.text = element_text(size = 12),
+        axis.title.x = element_text(size = 12),
+        strip.text.y = element_text(size = 14))+ ggtitle("Dotplot for GSE of Reactome pathways")
+
+```
+
+### Cluster map of gene sets in Reactome that display the highest gene-set enrichment.
+```{r , echo = FALSE, fig.width = 12}
+cnetplot(ReactGSE, foldChange=geneList, node_label="category", showCategory = 8) # node labeling is set by "node_label=", can be "category", "gene", "all" or "none"
+```
+
+# Survival Analysis {-}
+
+Raw RNA sequence counts were downloaded from two publicly available studies, the TCGA-GBM data (174 patients) and CPTAC study (108 patients). CombatSeq was used to adjust for library sizes between the external data and our own RNA seq data.
+
+Principal component analysis does not find tissue stiffness as measured by MRE to be a major explanatory factor in RNA seq variance.
+
+
+```{r mixomics_Prep, eval=TRUE, echo=FALSE}
+library(mixOmics)
+StiffR_Anno <- Anno
+
+### Filter out top 5000 varience sequences
+
+vs <- apply(StiffR_Training,1,var)
+oo <- order(vs, decreasing = T)
+gep <- StiffR_Training[oo[1:5000],]
+
+############ Setting up training set and design
+X1 <- as.data.frame(t(gep))
+Y1 <- as.factor(StiffR_Anno$Stiffness.by.Patient)
+design = Anno$Patient
+```
+
+ 
+```{r RNA_PCA_FULL, echo=FALSE, eval = TRUE, fig.cap="PCA of RNAseq data, first two PCs"}
+
+pca.RNA <- pca(X1, ncomp = 3, center = TRUE, scale = TRUE, multilevel = design)
+
+plotIndiv(pca.RNA,
+          comp = c(1,2),   # Specify components to plot
+          ind.names = F, # Show row names of samples
+          ellipse = T,
+          group = Anno$Stiffness.by.Patient,
+          title = 'RNAseq PCA comp 1-2',
+          legend = TRUE, legend.title = 'Stiffness')
+
+
+```
+PLS-DA using all 5000 RNA features provides good separation of stiff and soft biopsies
+```{r mixomics_PLS-DA, eval=TRUE, echo=FALSE}
+
+
+###### make the first PLS-DA model
+plsda.RNA <- plsda(X1,Y1, ncomp = 3) 
+
+plotIndiv(plsda.RNA, ind.names = FALSE, legend=TRUE,
+          comp=c(1,2), ellipse = TRUE, 
+          title = 'PLS-DA, 5000 features',
+          legend.title = 'Stiffness',
+          X.label = 'PLS-DA comp 1', Y.label = 'PLS-DA comp 2')
+```
+
+Sparse PLS-DA (sPLS-DA) found that 22 RNA features provides optimal separation.
+```{r mixomics_sPLS-DA, eval=TRUE, echo=FALSE}
+splsda.RNA <- splsda(X1, Y1, ncomp = 2,keepX = c(22,2)) 
+
+plotIndiv(splsda.RNA, ind.names = F, legend=TRUE,
+          comp=c(1,2), ellipse = TRUE, 
+          title = 'sPLS-DA, 22 features',
+          legend.title = 'Stiffness',
+          X.label = 'sPLS-DA comp 1', Y.label = 'sPLS-DA comp 2')
+```
+Useing a sparse PLS-DA model containing 22 genes, we stratified the TCGA and CPTAC patients into two groups (stiff-associated, soft-associated) according to gene expression. We then compared survival between the groups.  
+```{r Survival, eval=TRUE, echo=FALSE}
+#################### Predict stiffness status of external data
+
+library(survival)
+library(survminer)
+library(lubridate)
+library(dplyr)
+
+
+ # extract only the external samples from the normalized expression matrix
+
+Prediction_Normalized_matrix <- Prediction_Normalized_matrix[rownames(gep),] # extract only the 2000 highest variance genes (can be changed to 5000)
+
+X2 <- as.data.frame(t(Prediction_Normalized_matrix))
+
+predict.splsda.External <- predict(splsda.RNA, X2, 
+                              dist = "centroids.dist")
+
+predict.comp2 <- predict.splsda.External$class$centroids.dist[,2]
+
+table(factor(predict.comp2, levels = unique(StiffR_Anno$Stiffness.by.Patient)))
+
+Prediction_results <- as.data.frame(predict.splsda.External$class$centroids.dist)
+
+Prediction_results$ID <- rownames(Prediction_results)
+Combined_Clinical <- left_join(Combined_Clinical,Prediction_results, by = "ID")
+
+fit1 <- survfit( Surv(Combined_Clinical$days_to_event, Combined_Clinical$censor) ~ Combined_Clinical$comp2)
+
+# Kaplan-Meier plot
+
+ggsurvplot(
+  fit = fit1,
+  data = Combined_Clinical,
+  palette = c("cornflowerblue","darkorange3"),
+   group.by = Combined_Clinical$Stiffness.y,
+  xlab = "Days", 
+  ylab = "Overall survival probability",
+  legend.title = "ECM signature",
+  legend.labs = c("Stiff", "Soft"),
+  pval = TRUE,
+  pval.coord = c(0, 0.1),
+  font.x = c(14, "bold", "black"),
+  font.y = c(14, "bold", "black"),
+  
+  risk.table = TRUE)
+
+survdiff(Surv(Combined_Clinical$days_to_event, Combined_Clinical$censor) ~ Combined_Clinical$comp2)
+
+
+```
+<!-- New page -->
+\pagebreak
+
+
+```{r}
+sessionInfo()
+```
