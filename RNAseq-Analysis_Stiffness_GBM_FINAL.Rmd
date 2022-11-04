@@ -899,18 +899,20 @@ fit1 <- survfit( Surv(Combined_Clinical$days_to_event, Combined_Clinical$censor)
 ggsurvplot(
   fit = fit1,
   data = Combined_Clinical,
-  palette = c("cornflowerblue","darkorange3"),
-   group.by = Combined_Clinical$Stiffness.y,
+  size = 0.5,
+  #surv.median.line = "hv", # Add medians survival
+  palette = c("grey","black"),
+  group.by = Combined_Clinical$Stiffness.y,
   xlab = "Days", 
   ylab = "Overall survival probability",
   legend.title = "ECM signature",
-  legend.labs = c("Stiff", "Soft"),
+  legend.labs = c("Soft","Stiff" ),
   pval = TRUE,
   pval.coord = c(0, 0.1),
   font.x = c(14, "bold", "black"),
   font.y = c(14, "bold", "black"),
   
-  risk.table = TRUE)
+  risk.table = TRUE) 
 
 survdiff(Surv(Combined_Clinical$days_to_event, Combined_Clinical$censor) ~ Combined_Clinical$comp2)
 
