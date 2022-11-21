@@ -5,4 +5,4 @@ Run "RNAseq-Analysis_Stiffness_GBM_FINAL.Rmd" to recreate Differential expressio
 
 All code written by Skarphedinn Halldorsson
 
-Manuscript submitted to Neuro-Oncology
+Manuscript submitted to Clinical Cancer Research
